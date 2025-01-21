@@ -39,6 +39,8 @@ sub new {
     $self->{_attribute}->{PROGRAM_ORIGIN} = exists $param->{script_file} ? path($param->{script_file})->parent->stringify : '.';
     # error callback will push error messages into this array
     $self->{_errors} = [];
+    # unicode flag
+    $self->{unicode} = !!$param->{unicode};
     # debug callback print flags
     my $dump_opts = JV_PRINT_INDENT_FLAGS(2);
     $dump_opts |= JV_PRINT_SORTED;
@@ -134,6 +136,12 @@ A hash reference with pre-defined variables and their values, they can be used b
 later. Complex data structures like nested arrays and/or hashes are acceptable.
 
 Check the jq official documentation on how to reference variables inside script.
+
+=item * unicode
+
+A boolean indicating whether strings in the data (including hash keys)
+are treated as Unicode character strings.  The default is false, which
+means that strings are treated as UTF-8 byte strings.
 
 =item * library_paths
 

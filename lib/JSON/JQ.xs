@@ -24,7 +24,7 @@
 
 // utility functions for type marshaling
 // they are not XS code
-jv my_jv_input(pTHX_ void * arg) {
+jv my_jv_input(pTHX_ void * arg, bool unicode) {
     if (arg == NULL) {
         return jv_null();
     }
@@ -58,7 +58,7 @@ jv my_jv_input(pTHX_ void * arg) {
     else if (SvPOK(p_sv)) {
         // string
         STRLEN len;
-        char * p_pv = SvUTF8(p_sv) ? SvPVutf8(p_sv, len) : SvPV(p_sv, len);
+        char * p_pv = unicode ? SvPVutf8(p_sv, len) : SvPV(p_sv, len);
         //fprintf(stderr, "my_jv_input() got string: %s\n", p_pv);
         return jv_string_sized(p_pv, len);
     }
@@ -72,7 +72,7 @@ jv my_jv_input(pTHX_ void * arg) {
         }
         SSize_t i;
         for (i = 0; i <= len; i++) {
-            jval = jv_array_append(jval, my_jv_input(aTHX_ *av_fetch(p_av, i, 0)));
+            jval = jv_array_append(jval, my_jv_input(aTHX_ *av_fetch(p_av, i, 0), unicode));
         }
         return jval;
     }
@@ -83,10 +83,15 @@ jv my_jv_input(pTHX_ void * arg) {
         I32 len = hv_iterinit(p_hv);
         I32 i;
         for (i = 0; i < len; i++) {
-            char * key = NULL;
-            I32 klen = 0;
-            SV * val = hv_iternextsv(p_hv, &key, &klen);
-            jval = jv_object_set(jval, jv_string_sized(key, klen), my_jv_input(aTHX_ val));
+            HE * he = hv_iternext(p_hv);
+            STRLEN klen;
+            char * key = HePV(he, klen);
+            SV * val = HeVAL(he);
+            if (unicode && !HeUTF8(he))
+                key = bytes_to_utf8(key, &klen);
+            jval = jv_object_set(jval, jv_string_sized(key, klen), my_jv_input(aTHX_ val, unicode));
+            if (unicode && !HeUTF8(he))
+                Safefree(key);
         }
         return jval;
     }
@@ -97,7 +102,7 @@ jv my_jv_input(pTHX_ void * arg) {
     // NOREACH
 }
 
-void * my_jv_output(pTHX_ jv jval) {
+void * my_jv_output(pTHX_ jv jval, bool unicode) {
     jv_kind kind = jv_get_kind(jval);
     if (kind == JV_KIND_NULL) {
         // null
@@ -130,10 +135,7 @@ void * my_jv_output(pTHX_ jv jval) {
     }
     else if (kind == JV_KIND_STRING) {
         // string
-        //fprintf(stderr, "my_jv_output() got string: %s\n", jv_string_value(jval));
-        //return newSVpvn(jv_string_value(jval), jv_string_length_bytes(jval));
-        // NOTE: this might introduce unicode bug..
-        return newSVpvf("%s", jv_string_value(jval));
+        return newSVpvn_utf8(jv_string_value(jval), jv_string_length_bytes(jv_copy(jval)), unicode);
     }
     else if (kind == JV_KIND_ARRAY) {
         // array
@@ -143,7 +145,7 @@ void * my_jv_output(pTHX_ jv jval) {
         SSize_t i;
         for (i = 0; i < len; i++) {
             jv val = jv_array_get(jv_copy(jval), i);
-            av_push(p_av, (SV *)my_jv_output(aTHX_ val));
+            av_push(p_av, (SV *)my_jv_output(aTHX_ val, unicode));
             jv_free(val);
         }
         return newRV_noinc((SV *)p_av);
@@ -160,8 +162,8 @@ void * my_jv_output(pTHX_ jv jval) {
             }
             const char * k = jv_string_value(jv_copy(key));
             int klen = jv_string_length_bytes(key);
-            SV * v = (SV *)my_jv_output(aTHX_ val);
-            hv_store(p_hv, k, klen, v, 0);
+            SV * v = (SV *)my_jv_output(aTHX_ val, unicode);
+            hv_store(p_hv, k, unicode ? -klen : klen, v, 0);
             jv_free(key);
             jv_free(val);
             iter = jv_object_iter_next(jval, iter);
@@ -245,6 +247,7 @@ _init(self)
             SvREADONLY_on(sv_jq);
             hv_stores(self, "_jq", sv_jq);
         }
+        bool unicode = SvTRUE(*hv_fetchs(self, "unicode", 0));
         // step 2. set error and debug callbacks
         av_err = (AV *)SvRV(*hv_fetchs(self, "_errors", 0));
         jq_set_error_cb(_jq, my_error_cb, av_err);
@@ -255,15 +258,20 @@ _init(self)
         I32 len = hv_iterinit(hv_attr);
         I32 i;
         for (i = 0; i < len; i++) {
-            char * key = NULL;
-            I32 klen = 0;
-            SV * val = hv_iternextsv(hv_attr, &key, &klen);
-            jq_set_attr(_jq, jv_string_sized(key, klen), my_jv_input(aTHX_ val));
+            HE * he = hv_iternext(hv_attr);
+            STRLEN klen;
+            char * key = HePV(he, klen);
+            SV * val = HeVAL(he);
+            if (unicode && !HeUTF8(he))
+                key = bytes_to_utf8(key, &klen);
+            jq_set_attr(_jq, jv_string_sized(key, klen), my_jv_input(aTHX_ val, unicode));
+            if (unicode && !HeUTF8(he))
+                Safefree(key);
         }
         // set JQ_VERSION
         jq_set_attr(_jq, jv_string("VERSION_DIR"), jv_string(JQ_VERSION));
         // step 4. compile
-        jv args = my_jv_input(aTHX_ *hv_fetchs(self, "variable", 0));
+        jv args = my_jv_input(aTHX_ *hv_fetchs(self, "variable", 0), unicode);
         if (hv_exists(self, "script_file", 11)) {
             jv data = jv_load_file(SvPV_nolen(*hv_fetchs(self, "script_file", 0)), 1);
             if (!jv_is_valid(data)) {
@@ -307,7 +315,8 @@ _process(self, sv_input, av_output)
         assert_isa(aTHX_ ST(0));
         sv_jq = *hv_fetchs(self, "_jq", 0);
         _jq = INT2PTR(jq_state *, SvIV(sv_jq));
-        jv jv_input = my_jv_input(aTHX_ sv_input);
+        bool unicode = SvTRUE(*hv_fetchs(self, "unicode", 0));
+        jv jv_input = my_jv_input(aTHX_ sv_input, unicode);
         int jq_flags = (int)SvIV(*hv_fetchs(self, "jq_flags", 0));
         // logic from process() in main.c
         jq_start(_jq, jv_input, jq_flags);
@@ -317,7 +326,7 @@ _process(self, sv_input, av_output)
         av_clear(av_err);
         int ret = 14;
         while (jv_is_valid(result = jq_next(_jq))) {
-            av_push(av_output, (SV *)my_jv_output(aTHX_ result));
+            av_push(av_output, (SV *)my_jv_output(aTHX_ result, unicode));
             if (jv_get_kind(result) == JV_KIND_FALSE || jv_get_kind(result) == JV_KIND_NULL) {
                 ret = 11;
             }
