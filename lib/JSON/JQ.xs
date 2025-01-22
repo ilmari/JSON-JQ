@@ -158,7 +158,7 @@ void * my_jv_output(pTHX_ jv jval) {
             if (jv_get_kind(key) != JV_KIND_STRING) {
                 croak("cannot take non-string type as hash key: JV_KIND == %i", jv_get_kind(key));
             }
-            const char * k = jv_string_value(key);
+            const char * k = jv_string_value(jv_copy(key));
             int klen = jv_string_length_bytes(key);
             SV * v = (SV *)my_jv_output(aTHX_ val);
             hv_store(p_hv, k, klen, v, 0);
@@ -178,7 +178,7 @@ static void my_error_cb(void * errors, jv jerr) {
     dTHX;
     // original jerr will be freed by jq engine
     jerr = jv_copy(jerr);
-    av_push((AV *)errors, newSVpvn(jv_string_value(jerr), jv_string_length_bytes(jerr)));
+    av_push((AV *)errors, newSVpvn(jv_string_value(jerr), jv_string_length_bytes(jv_copy(jerr))));
 }
 
 static void my_debug_cb(void * data, jv input) {
